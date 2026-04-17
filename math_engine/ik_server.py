@@ -78,7 +78,7 @@ while True:
     try:
         data, address = server_socket.recvfrom(1024)
         message = json.loads(data.decode('utf-8'))
-        print(f"Received from Godot: {message}")
+        # print(f"Received from Godot: {message}")
         
         tx, ty = message.get("target_pos", [0, 0, 0])[0:2]
         target_vec = Vec2(tx, ty)
