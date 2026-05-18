@@ -1,0 +1,11 @@
+[gd_scene format=3 uid="uid://dtckaa4cyc0vn"]
+
+[ext_resource type="Script" uid="uid://dt75xu2jgqkya" path="res://spatial_bridge.gd" id="1_pwfse"]
+
+[node name="Main3D" type="Node3D" unique_id=1161039661]
+script = ExtResource("1_pwfse")
+
+[node name="CameraPivot" type="Node3D" parent="." unique_id=1478030349]
+
+[node name="Camera3D" type="Camera3D" parent="CameraPivot" unique_id=1979355284]
+transform = Transform3D(1, 0, 0, 0, 0.8660254, 0.5, 0, -0.5, 0.8660254, 0, 20, 40)
