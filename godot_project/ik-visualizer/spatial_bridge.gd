@@ -6,12 +6,19 @@ var server_port := 5005
 
 @onready var camera = $CameraPivot/Camera3D
 @onready var pivot = $CameraPivot
+@onready var algo_dropdown = $UI/OptionButton
 
-var joints_3d: Array[MeshInstance3D] = []
+var joints_3d: Array[Node3D] = []
 var bone_mesh_instance := MeshInstance3D.new()
 var bone_mesh := ImmediateMesh.new()
 var grid_mesh_instance := MeshInstance3D.new()
 var grid_mesh := ImmediateMesh.new()
+
+# var base_rot_scene = preload("res://visuals/Base_rotation.fbx")
+# var arm_1_scene = preload("res://visuals/arm_1.fbx")
+# var arm_2_scene = preload("res://visuals/arm_2.fbx")
+# var endpoint_scene = preload("res://visuals/endpoint.fbx")
+# var base_scene = preload("res://visuals/Base.fbx")
 
 var target_height: float = 0.0
 
@@ -28,19 +35,30 @@ func _ready():
 
 	grid_mesh_instance.mesh = grid_mesh
 	var grid_mat = StandardMaterial3D.new()
-	grid_mat.vertex_color_use_as_albedo = true # Allows multi-colored lines!
-	grid_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED # Unlit so it glows
+	grid_mat.vertex_color_use_as_albedo = true
+	grid_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	grid_mesh_instance.material_override = grid_mat
 	add_child(grid_mesh_instance)
+	
+	algo_dropdown.add_item("FABRIK")
+	algo_dropdown.add_item("CCD")
+	algo_dropdown.add_item("JACOBIAN")
+	
+	# var static_base = base_scene.instantiate()
+	# static_base.scale = Vector3(0.01, 0.01, 0.01)
+	# add_child(static_base)
+	# apply_glow(static_base, Color.YELLOW)
 	
 	draw_grid()
 
 func _process(_delta):
 	var target_3d = get_3d_mouse_pos()
 	
+	var selected_algo = algo_dropdown.get_item_text(algo_dropdown.selected)
+	
 	var data_to_send = {
 		"target_pos": [target_3d.x, target_3d.y, target_3d.z],
-		"algo": "FABRIK",
+		"algo": selected_algo,
 		"mode": "3D"
 	}
 	
@@ -55,25 +73,27 @@ func _process(_delta):
 				draw_arm(data_received["positions"])
 
 func draw_arm(positions: Array):
-	# 1. Update Spheres
 	if joints_3d.size() < positions.size():
 		for i in range(positions.size() - joints_3d.size()):
-			var mesh_instance = MeshInstance3D.new()
+			var new_joint = MeshInstance3D.new()
 			var sphere = SphereMesh.new()
-			sphere.radius = 1.0   # Shrunk from 20!
-			sphere.height = 2.0
-			var material = StandardMaterial3D.new()
-			material.albedo_color = Color.CYAN
-			sphere.material = material
-			add_child(mesh_instance)
-			joints_3d.append(mesh_instance)
+			sphere.radius = 0.5
+			sphere.height = 1.0
+			new_joint.mesh = sphere
 			
-	# Move Spheres
+			var mat = StandardMaterial3D.new()
+			mat.albedo_color = Color.CYAN
+			mat.emission_enabled = true
+			mat.emission = Color.CYAN
+			new_joint.material_override = mat
+			
+			add_child(new_joint)
+			joints_3d.append(new_joint)
+
 	for i in range(positions.size()):
 		var pos = positions[i]
 		joints_3d[i].position = Vector3(pos[0], pos[1], pos[2])
 
-	# 2. Draw Bones (Lines)
 	bone_mesh.clear_surfaces()
 	bone_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
 	for i in range(positions.size() - 1):
@@ -99,10 +119,10 @@ func draw_grid():
 	
 	var size = 100
 	var step = 5
-	var y_level = 0.01 # Slightly above the floor to prevent flickering
+	var y_level = 0.01
 	
 	for i in range(-size, size + step, step):
-		grid_mesh.surface_set_color(Color(0.3, 0.3, 0.3, 0.5)) # Faint Grey
+		grid_mesh.surface_set_color(Color(0.3, 0.3, 0.3, 0.5))
 		
 		grid_mesh.surface_add_vertex(Vector3(i, y_level, -size))
 		grid_mesh.surface_add_vertex(Vector3(i, y_level, size))
@@ -137,3 +157,19 @@ func _input(event):
 			target_height -= 1.0
 			
 		target_height = clamp(target_height, 0.0, camera.global_position.y - 2.0)
+
+func apply_glow(node: Node, color: Color):
+	for child in node.get_children():
+		if child is MeshInstance3D:
+			var mat = StandardMaterial3D.new()
+
+			mat.albedo_color = color
+
+			mat.emission_enabled = false 
+
+			mat.metallic = 0.8
+			mat.roughness = 0.3 
+
+			child.material_override = mat
+			
+		apply_glow(child, color)

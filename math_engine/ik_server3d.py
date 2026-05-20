@@ -2,6 +2,9 @@ import socket
 import json
 import math
 
+from ccd_3d import ccd_iteration_3d
+from jacobian_3d import jacobian_iteration_3d
+from fabrik_3d import fabrik_iteration_3d
 class Vec3:
     def __init__(self, x, y, z):
         self.x = x
@@ -21,48 +24,6 @@ class Vec3:
     def to_list(self):
         return [self.x, self.y, self.z]
 
-class FabrikChain3D:
-    def __init__(self, joints, target):
-        self.joints = joints[:]
-        self.target = target
-        self.n = len(joints)
-        self.tol = 0.1
-        self.origin = joints[0]
-        self.lengths = [(joints[i] - joints[i+1]).magnitude for i in range(self.n - 1)]
-        self.total_length = sum(self.lengths)
-
-    def backward(self):
-        self.joints[-1] = self.target
-        for i in range(self.n - 2, -1, -1):
-            r = self.joints[i+1] - self.joints[i]
-            dist = r.magnitude
-            if dist == 0: continue
-            l = self.lengths[i] / dist
-            self.joints[i] = (1 - l) * self.joints[i+1] + l * self.joints[i]
-
-    def forward(self):
-        self.joints[0] = self.origin
-        for i in range(self.n - 1):
-            r = self.joints[i+1] - self.joints[i]
-            dist = r.magnitude
-            if dist == 0: continue
-            l = self.lengths[i] / dist
-            self.joints[i+1] = (1 - l) * self.joints[i] + l * self.joints[i+1]
-
-    def solve(self):
-        if (self.target - self.origin).magnitude > self.total_length:
-            for i in range(self.n - 1):
-                r = self.target - self.joints[i]
-                dist = r.magnitude
-                l = self.lengths[i] / dist
-                self.joints[i+1] = (1 - l) * self.joints[i] + l * self.target
-            return
-        for _ in range(20):
-            self.backward()
-            self.forward()
-            if (self.joints[-1] - self.target).magnitude < self.tol:
-                break
-
 # --- The UDP Server ---
 HOST = '127.0.0.1'
 PORT = 5005
@@ -71,24 +32,51 @@ server_socket.bind((HOST, PORT))
 
 print(f"Python 3D FABRIK Server running on {HOST}:{PORT}...")
 
-# 3D Initial arm setup (X, Y, Z)
 initial_joints = [Vec3(x * 5, 0, 0) for x in range(10)]
+# initial_joints = [Vec3(0, 0, 0), Vec3(1, 0, 0), Vec3(10, 0, 0), Vec3(15, 0, 0)]
 
 while True:
     try:
         data, address = server_socket.recvfrom(1024)
         message = json.loads(data.decode('utf-8'))
+        # print(f"Received from Godot: {message}")
         
-        # Grab all 3 coordinates!
         tx, ty, tz = message.get("target_pos", [0, 0, 0])
         target_vec = Vec3(tx, ty, tz)
         
-        chain = FabrikChain3D(initial_joints, target_vec)
-        chain.solve()
+        algorithm_choice = message.get("algo", "FABRIK")
         
-        initial_joints = chain.joints
+        max_reach = sum((initial_joints[i+1] - initial_joints[i]).magnitude for i in range(len(initial_joints)-1))
         
-        response = {"positions": [j.to_list() for j in chain.joints]}
+        base_pos = initial_joints[0]
+        vector_to_target = target_vec - base_pos
+        distance_to_target = vector_to_target.magnitude
+        
+        if distance_to_target > max_reach:
+            clamped_vector = vector_to_target * ((max_reach - 0.01) / distance_to_target)
+            target_vec = base_pos + clamped_vector
+            
+            tx, ty, tz = target_vec.x, target_vec.y, target_vec.z
+        
+        if algorithm_choice == "FABRIK":
+            chain = fabrik_iteration_3d(initial_joints, target_vec)
+            chain.solve()
+            initial_joints = chain.joints
+            positions_to_send = [j.to_list() for j in initial_joints]
+            
+        elif algorithm_choice == "CCD":
+            joints_list = [j.to_list() for j in initial_joints]
+            new_joints = ccd_iteration_3d(joints_list, [tx, ty, tz])
+            initial_joints = [Vec3(j[0], j[1], j[2]) for j in new_joints]
+            positions_to_send = new_joints
+            
+        elif algorithm_choice == "JACOBIAN":
+            joints_list = [j.to_list() for j in initial_joints]
+            new_joints = jacobian_iteration_3d(joints_list, [tx, ty, tz], method='dls')
+            initial_joints = [Vec3(j[0], j[1], j[2]) for j in new_joints]
+            positions_to_send = new_joints
+        
+        response = {"positions": positions_to_send}
         server_socket.sendto(json.dumps(response).encode('utf-8'), address)
         
     except KeyboardInterrupt:
