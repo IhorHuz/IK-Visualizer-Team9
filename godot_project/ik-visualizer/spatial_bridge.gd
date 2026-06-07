@@ -20,6 +20,8 @@ var grid_mesh := ImmediateMesh.new()
 
 var target_height: float = 0.0
 
+var last_valid_target := Vector3(10, 0, 0)
+
 var mode_label: Label
 
 func _ready():
@@ -150,8 +152,9 @@ func get_3d_mouse_pos() -> Vector3:
 	var target_intersect = plane.intersects_ray(from, to)
 
 	if target_intersect:
+		last_valid_target = target_intersect
 		return target_intersect
-	return Vector3.ZERO
+	return last_valid_target  
 
 func draw_grid():
 	grid_mesh.clear_surfaces()
