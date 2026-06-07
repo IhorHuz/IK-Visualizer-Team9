@@ -1,10 +1,15 @@
 import socket
 import json
 import math
+import numpy as np
 
 from ccd_3d import ccd_iteration_3d
 from jacobian_3d import jacobian_iteration_3d
 from fabrik_3d import fabrik_iteration_3d
+
+from ccd_robot_3d import ccd_iteration_3d as ccd_robot
+from jacobian_robot_3d import jacobian_iteration_3d as jacobian_robot
+from fabrik_robot_3d import fabrik_iteration_3d as fabrik_robot
 
 
 class Vec3:
@@ -34,16 +39,11 @@ class Vec3:
 
 
 # --- CONFIGURATION ---
-# Segment lengths for the 6-DOF robot arm (standing vertically along Y axis).
-# J0 (base) at origin, each subsequent joint offset by the segment length.
-SEGMENT_LENGTHS = [2.0, 5.0, 4.0, 0.5, 0.5]
-# Labels for reference (not used in computation):
-#   base=2.0, arm_1=5.0, arm_2=4.0, wrist_pitch=0.5, wrist_yaw/tool=0.5
-# Results in 6 joints (J0..J5). Total reach = 12.0 units.
-
+SEGMENT_LENGTHS = [3.455, 6.103, 1.463, 8.280, 2.699]
 JOINT_COUNT = len(SEGMENT_LENGTHS) + 1
 MAX_REACH = sum(SEGMENT_LENGTHS)
 
+DOF_AXES = ["Y", "Z", "Z", "Z", "Y"]
 
 def build_vertical_chain(segment_lengths):
     joints = [Vec3(0, 0, 0)]
@@ -53,20 +53,40 @@ def build_vertical_chain(segment_lengths):
         joints.append(Vec3(0, y, 0))
     return joints
 
+def get_rotation_matrix(axis, angle):
+    # axis is "Y" or "Z"
+    c = math.cos(angle)
+    s = math.sin(angle)
+    if axis == "Y":
+        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+    elif axis == "Z":
+        return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+    return np.eye(3)
 
 def compute_joint_angles(joints):
     angles = []
-    for i in range(1, len(joints) - 1):
-        v1 = joints[i] - joints[i - 1]
-        v2 = joints[i + 1] - joints[i]
-        d1 = v1.magnitude
-        d2 = v2.magnitude
-        if d1 < 1e-8 or d2 < 1e-8:
-            angles.append(0.0)
-            continue
-        dot = (v1.x * v2.x + v1.y * v2.y + v1.z * v2.z) / (d1 * d2)
-        dot = max(-1.0, min(1.0, dot))
-        angles.append(math.acos(dot))
+    current_R = np.eye(3)
+
+    for i in range(len(SEGMENT_LENGTHS)):
+        v_world = np.array([
+            joints[i+1].x - joints[i].x,
+            joints[i+1].y - joints[i].y,
+            joints[i+1].z - joints[i].z
+        ])
+
+        v_local = np.dot(current_R.T, v_world)
+
+        axis = DOF_AXES[i]
+
+        if axis == "Y":
+            angle = math.atan2(v_local[0], v_local[2])
+        elif axis == "Z":
+            angle = math.atan2(v_local[0], v_local[1])
+
+        angles.append(float(angle))
+
+        current_R = np.dot(current_R, get_rotation_matrix(axis, angle))
+
     return angles
 
 
@@ -92,6 +112,7 @@ while True:
         target_vec = Vec3(tx, ty, tz)
 
         algorithm_choice = message.get("algo", "FABRIK")
+        mode = message.get("mode", "STICK")
 
         base_pos = initial_joints[0]
         vector_to_target = target_vec - base_pos
@@ -102,29 +123,48 @@ while True:
             target_vec = base_pos + clamped_vector
             tx, ty, tz = target_vec.x, target_vec.y, target_vec.z
 
-        if algorithm_choice == "FABRIK":
-            chain = fabrik_iteration_3d(initial_joints, target_vec)
-            chain.solve()
-            initial_joints = chain.joints
-            positions_to_send = [j.to_list() for j in initial_joints]
+        if mode == "ROBOT":
+            if algorithm_choice == "FABRIK":
+                chain = fabrik_robot(initial_joints, target_vec)
+                chain.solve()
+                initial_joints = [Vec3(float(j[0]), float(j[1]), float(j[2])) for j in chain.joints]
+                positions_to_send = [[float(coord) for coord in j] for j in chain.joints]
+            elif algorithm_choice == "CCD":
+                joints_list = [j.to_list() for j in initial_joints]
+                new_joints = ccd_robot(joints_list, [tx, ty, tz])
+                initial_joints = [Vec3(float(j[0]), float(j[1]), float(j[2])) for j in new_joints]
+                positions_to_send = [[float(coord) for coord in j] for j in new_joints]
+            elif algorithm_choice == "JACOBIAN":
+                joints_list = [j.to_list() for j in initial_joints]
+                new_joints = jacobian_robot(joints_list, [tx, ty, tz], method='dls')
+                initial_joints = [Vec3(float(j[0]), float(j[1]), float(j[2])) for j in new_joints]
+                positions_to_send = [[float(coord) for coord in j] for j in new_joints]
+        else: # STICK mode
+            if algorithm_choice == "FABRIK":
+                chain = fabrik_iteration_3d(initial_joints, target_vec)
+                chain.solve()
+                initial_joints = [Vec3(float(j.x), float(j.y), float(j.z)) for j in chain.joints]
+                positions_to_send = [j.to_list() for j in initial_joints]
+            elif algorithm_choice == "CCD":
+                joints_list = [j.to_list() for j in initial_joints]
+                new_joints = ccd_iteration_3d(joints_list, [tx, ty, tz])
+                initial_joints = [Vec3(float(j[0]), float(j[1]), float(j[2])) for j in new_joints]
+                positions_to_send = [[float(coord) for coord in j] for j in new_joints]
+            elif algorithm_choice == "JACOBIAN":
+                joints_list = [j.to_list() for j in initial_joints]
+                new_joints = jacobian_iteration_3d(joints_list, [tx, ty, tz], method='dls')
+                initial_joints = [Vec3(float(j[0]), float(j[1]), float(j[2])) for j in new_joints]
+                positions_to_send = [[float(coord) for coord in j] for j in new_joints]
 
-        elif algorithm_choice == "CCD":
-            joints_list = [j.to_list() for j in initial_joints]
-            new_joints = ccd_iteration_3d(joints_list, [tx, ty, tz])
-            initial_joints = [Vec3(j[0], j[1], j[2]) for j in new_joints]
-            positions_to_send = new_joints
-
-        elif algorithm_choice == "JACOBIAN":
-            joints_list = [j.to_list() for j in initial_joints]
-            new_joints = jacobian_iteration_3d(joints_list, [tx, ty, tz], method='dls')
-            initial_joints = [Vec3(j[0], j[1], j[2]) for j in new_joints]
-            positions_to_send = new_joints
-
-        response = {"positions": positions_to_send}
+        angles_to_send = compute_joint_angles(initial_joints)
+        response = {
+            "positions": positions_to_send,
+            "angles": angles_to_send
+        }
         server_socket.sendto(json.dumps(response).encode('utf-8'), address)
 
     except KeyboardInterrupt:
         print("\nShutting down server.")
         break
     except Exception as e:
-        pass
+        print(f"Server error: {e}")

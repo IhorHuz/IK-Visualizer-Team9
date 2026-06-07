@@ -2,6 +2,18 @@ extends Node3D
 
 enum RendererMode { STICK, ROBOT }
 
+const FBX_BASE = preload("res://visuals/Base_001.fbx")
+const FBX_BASE_ROTATION = preload("res://visuals/Base_rotation_001.fbx")
+const FBX_ARM_1 = preload("res://visuals/arm_1_001.fbx")
+const FBX_ARM_2 = preload("res://visuals/arm_2_001.fbx")
+const FBX_ENDPOINT = preload("res://visuals/endpoint_001.fbx")
+const FBX_H_JOINT_BASE = preload("res://visuals/horizontal_joint_base_002.fbx")
+const FBX_H_JOINT_RECEPTICLE = preload("res://visuals/horizontal_joint_recepticle_001.fbx")
+
+const MODEL_SCALE := 1.0
+const DOF_AXES := ["Y", "Z", "Z", "Z", "Y"]
+
+
 var udp_peer := PacketPeerUDP.new()
 var server_ip := "127.0.0.1"
 var server_port := 5005
@@ -20,9 +32,11 @@ var grid_mesh := ImmediateMesh.new()
 
 var target_height: float = 0.0
 
-var last_valid_target := Vector3(10, 0, 0)
-
 var mode_label: Label
+
+var robot_arm_root: Node3D
+var robot_joints: Array[Node3D] = []
+var robot_fbx_parts: Array[Node3D] = []
 
 func _ready():
 	udp_peer.connect_to_host(server_ip, server_port)
@@ -52,19 +66,21 @@ func _ready():
 	$UI.add_child(mode_label)
 	update_mode_label()
 
+	build_robot_arm()
+
 	draw_grid()
 
 func _process(_delta):
+	if renderer_mode == RendererMode.ROBOT:
+		return
+
 	var target_3d = get_3d_mouse_pos()
-
 	var selected_algo = algo_dropdown.get_item_text(algo_dropdown.selected)
-
 	var data_to_send = {
 		"target_pos": [target_3d.x, target_3d.y, target_3d.z],
 		"algo": selected_algo,
 		"mode": "3D"
 	}
-
 	udp_peer.put_packet(JSON.stringify(data_to_send).to_utf8_buffer())
 
 	if udp_peer.get_available_packet_count() > 0:
@@ -74,22 +90,23 @@ func _process(_delta):
 			var data_received = json.data
 			if data_received.has("positions"):
 				var positions = data_received["positions"]
-				draw_arm(positions)
+				var angles = data_received.get("angles", [])
+				draw_arm(positions, angles)
 
-func draw_arm(positions: Array):
+func draw_arm(positions: Array, angles: Array):
 	match renderer_mode:
 		RendererMode.STICK:
 			draw_stick_arm(positions)
 		RendererMode.ROBOT:
-			draw_robot_arm(positions)
+			draw_robot_arm(positions, angles)
 
 func draw_stick_arm(positions: Array):
 	if joints_3d.size() < positions.size():
 		for i in range(positions.size() - joints_3d.size()):
 			var new_joint = MeshInstance3D.new()
 			var sphere = SphereMesh.new()
-			sphere.radius = 0.5
-			sphere.height = 1.0
+			sphere.radius = 0.2
+			sphere.height = 0.4
 			new_joint.mesh = sphere
 
 			var mat = StandardMaterial3D.new()
@@ -112,35 +129,154 @@ func draw_stick_arm(positions: Array):
 		bone_mesh.surface_add_vertex(Vector3(positions[i+1][0], positions[i+1][1], positions[i+1][2]))
 	bone_mesh.surface_end()
 
-func draw_robot_arm(positions: Array):
-	if joints_3d.size() < positions.size():
-		for i in range(positions.size() - joints_3d.size()):
-			var new_joint = MeshInstance3D.new()
-			var sphere = SphereMesh.new()
-			sphere.radius = 0.15
-			sphere.height = 0.3
-			new_joint.mesh = sphere
+func build_robot_arm():
+	robot_arm_root = Node3D.new()
+	robot_arm_root.name = "RobotArm"
+	add_child(robot_arm_root)
 
-			var mat = StandardMaterial3D.new()
-			mat.albedo_color = Color.ORANGE
-			mat.emission_enabled = true
-			mat.emission = Color.ORANGE
-			new_joint.material_override = mat
+	var base = FBX_BASE.instantiate()
+	base.scale = Vector3.ONE * MODEL_SCALE
+	robot_arm_root.add_child(base)
+	robot_fbx_parts.append(base)
 
-			add_child(new_joint)
-			joints_3d.append(new_joint)
+	var joint0 = Node3D.new()
+	joint0.name = "Joint0"
+	joint0.position.y = 0.5 
+	robot_arm_root.add_child(joint0)
+	robot_joints.append(joint0)
 
-	for i in range(positions.size()):
-		var pos = positions[i]
-		joints_3d[i].position = Vector3(pos[0], pos[1], pos[2])
+	var base_rot = FBX_BASE_ROTATION.instantiate()
+	base_rot.scale = Vector3.ONE * MODEL_SCALE
+	base_rot.position.y = 0.0 
+	base_rot.rotation = Vector3.ZERO
+	joint0.add_child(base_rot)
+	robot_fbx_parts.append(base_rot)
+	
+	var joint1 = Node3D.new()
+	joint1.name = "Joint1"
+	joint1.position.y = 1.2
+	joint0.add_child(joint1)
+	robot_joints.append(joint1)
+	
+	var arm1 = FBX_ARM_1.instantiate()
+	arm1.scale = Vector3.ONE * MODEL_SCALE
+	arm1.rotation = Vector3(0, PI, 0)
+	joint1.add_child(arm1)
+	robot_fbx_parts.append(arm1)
+	
+	var joint2 = Node3D.new()
+	joint2.name = "Joint2"
+	joint2.position.y = 3.1
+	joint1.add_child(joint2)
+	robot_joints.append(joint2)
+	
+	var h_joint = FBX_H_JOINT_BASE.instantiate()
+	h_joint.scale = Vector3.ONE * MODEL_SCALE
+	h_joint.position.y = 0.0
+	h_joint.rotation = Vector3.ZERO
+	joint2.add_child(h_joint)
+	robot_fbx_parts.append(h_joint)
+
+	var joint3 = Node3D.new()
+	joint3.name = "Joint3"
+	joint3.position.y = 0.85
+	joint2.add_child(joint3)
+	robot_joints.append(joint3)
+	
+	var h_recept = FBX_H_JOINT_RECEPTICLE.instantiate()
+	h_recept.scale = Vector3.ONE * MODEL_SCALE
+	h_recept.position.y = 0.0 
+	h_recept.rotation = Vector3.ZERO
+	joint3.add_child(h_recept)
+	robot_fbx_parts.append(h_recept)
+
+	var joint4 = Node3D.new()
+	joint4.name = "Joint4"
+	joint4.position.y = 1.3
+	joint3.add_child(joint4)
+	robot_joints.append(joint4)
+	
+	var arm2 = FBX_ARM_2.instantiate()
+	arm2.scale = Vector3.ONE * MODEL_SCALE
+	arm2.rotation = Vector3(0, PI, 0)
+	joint4.add_child(arm2)
+	robot_fbx_parts.append(arm2)
+
+	var joint5 = Node3D.new()
+	joint5.name = "Joint5"
+	joint5.position.y = 5.25
+	joint4.add_child(joint5)
+	robot_joints.append(joint5)
+	
+	var h_joint2 = FBX_H_JOINT_BASE.instantiate()
+	h_joint2.scale = Vector3.ONE * MODEL_SCALE
+	h_joint2.position.y = 0.0
+	h_joint2.rotation = Vector3.ZERO
+	joint5.add_child(h_joint2)
+	robot_fbx_parts.append(h_joint2)
+
+	var endpoint_node = Node3D.new()
+	endpoint_node.name = "Endpoint"
+	endpoint_node.position.y = 0.825
+	joint5.add_child(endpoint_node)
+	
+	var endpoint_mesh = FBX_ENDPOINT.instantiate()
+	endpoint_mesh.scale = Vector3.ONE * MODEL_SCALE
+	endpoint_mesh.position.y = 0.0 
+	endpoint_mesh.rotation = Vector3.ZERO
+	endpoint_node.add_child(endpoint_mesh)
+	robot_fbx_parts.append(endpoint_mesh)
+
+	for part in robot_fbx_parts:
+		apply_glow(part, Color.ORANGE)
+
+	robot_arm_root.visible = (renderer_mode == RendererMode.ROBOT)
+
+func print_hierarchy(node: Node, depth: int):
+	var indent = "  ".repeat(depth)
+	var nod = node as Node3D
+	if nod:
+		print(indent, node.name, " pos=", nod.position, " rot=", nod.rotation, " scale=", nod.scale)
+	else:
+		print(indent, node.name)
+	for child in node.get_children():
+		print_hierarchy(child, depth + 1)
+
+func print_hierarchy_aabb(node: Node, depth: int):
+	var indent = "  ".repeat(depth)
+	var mi := node as MeshInstance3D
+	if mi and mi.mesh:
+		var aabb = mi.get_aabb()
+		print(indent, node.name, " mesh AABB pos=", aabb.position, " size=", aabb.size)
+	for child in node.get_children():
+		print_hierarchy_aabb(child, depth + 1)
+
+func draw_robot_arm(positions: Array, angles: Array):
+	if positions.size() < 6:
+		return
+
+	robot_arm_root.visible = true
+
+	robot_arm_root.global_position = Vector3(positions[0][0], positions[0][1], positions[0][2])
+
+	for i in range(robot_joints.size()):
+		if i < angles.size():
+			var angle = angles[i]
+			match DOF_AXES[i] if i < DOF_AXES.size() else "Z":
+				"Y":
+					robot_joints[i].rotation.y = angle
+				"Z":
+					robot_joints[i].rotation.z = angle
+				_:
+					robot_joints[i].rotation = Vector3.ZERO
 
 	bone_mesh.clear_surfaces()
 	bone_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-	for i in range(positions.size() - 1):
-		var color = Color.ORANGE if i == 0 else Color.DIM_GRAY
+	for i in range(robot_joints.size() - 1):
+		var color = Color.ORANGE_RED
 		bone_mesh.surface_set_color(color)
-		bone_mesh.surface_add_vertex(Vector3(positions[i][0], positions[i][1], positions[i][2]))
-		bone_mesh.surface_add_vertex(Vector3(positions[i+1][0], positions[i+1][1], positions[i+1][2]))
+		bone_mesh.surface_add_vertex(robot_joints[i].global_position)
+		bone_mesh.surface_add_vertex(robot_joints[i + 1].global_position)
 	bone_mesh.surface_end()
 
 func get_3d_mouse_pos() -> Vector3:
@@ -152,9 +288,8 @@ func get_3d_mouse_pos() -> Vector3:
 	var target_intersect = plane.intersects_ray(from, to)
 
 	if target_intersect:
-		last_valid_target = target_intersect
 		return target_intersect
-	return last_valid_target  
+	return Vector3.ZERO
 
 func draw_grid():
 	grid_mesh.clear_surfaces()
@@ -214,6 +349,9 @@ func clear_arm():
 		j.queue_free()
 	joints_3d.clear()
 	bone_mesh.clear_surfaces()
+	if robot_arm_root:
+		robot_arm_root.visible = (renderer_mode == RendererMode.ROBOT)
+
 
 func update_mode_label():
 	var names = {
@@ -226,14 +364,14 @@ func apply_glow(node: Node, color: Color):
 	for child in node.get_children():
 		if child is MeshInstance3D:
 			var mat = StandardMaterial3D.new()
-
 			mat.albedo_color = color
-
-			mat.emission_enabled = false
-
-			mat.metallic = 0.8
+			mat.metallic = 0.7
 			mat.roughness = 0.3
-
+			mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+			
+			mat.emission_enabled = false
+			mat.emission = color
+			mat.emission_energy_multiplier = 1.5
+			
 			child.material_override = mat
-
 		apply_glow(child, color)

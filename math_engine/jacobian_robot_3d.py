@@ -11,17 +11,21 @@ def jacobian_iteration_3d(joints, target, method='dls', learning_rate=0.2, dampi
         return [list(j) for j in joints]
 
     num_joints = len(joints) - 1
-    J = np.zeros((3, 3 * num_joints))
+    # DOF: J0=Y, J1=Z, J2=Z, J3=Z, J4=Y
+    dof_axes = [
+        np.array([0, 1, 0]),
+        np.array([0, 0, 1]),
+        np.array([0, 0, 1]),
+        np.array([0, 0, 1]),
+        np.array([0, 1, 0]),
+    ]
+
+    J = np.zeros((3, num_joints))
 
     for i in range(num_joints):
         r = end_effector - joints[i]
-        rx, ry, rz = r
-        J_i = np.array([
-            [  0,  rz, -ry],
-            [-rz,   0,  rx],
-            [ ry, -rx,   0]
-        ])
-        J[:, i*3:(i+1)*3] = J_i
+        axis = dof_axes[i] if i < len(dof_axes) else np.array([0, 0, 1])
+        J[:, i] = np.cross(axis, r)
 
     if method == 'dls':
         lambda_sq = damping ** 2
@@ -29,22 +33,21 @@ def jacobian_iteration_3d(joints, target, method='dls', learning_rate=0.2, dampi
         dls_matrix = np.dot(J, J.T) + lambda_sq * I
         dls_inv = np.linalg.inv(dls_matrix)
         J_dls = np.dot(J.T, dls_inv)
-        delta_omega = np.dot(J_dls, delta_target) * learning_rate
+        delta_theta = np.dot(J_dls, delta_target) * learning_rate
     elif method == 'transpose':
-        delta_omega = learning_rate * np.dot(J.T, delta_target)
+        delta_theta = learning_rate * np.dot(J.T, delta_target)
     elif method == 'pseudoinverse':
         J_pinv = np.linalg.pinv(J)
-        delta_omega = np.dot(J_pinv, delta_target) * learning_rate
+        delta_theta = np.dot(J_pinv, delta_target) * learning_rate
     else:
-        delta_omega = np.zeros(3 * num_joints)
+        delta_theta = np.zeros(num_joints)
 
     for i in range(num_joints):
-        omega = delta_omega[i*3:(i+1)*3]
-        angle = np.linalg.norm(omega)
-        if angle < 1e-5:
+        angle = delta_theta[i]
+        if abs(angle) < 1e-5:
             continue
 
-        axis = omega / angle
+        axis = dof_axes[i] if i < len(dof_axes) else np.array([0, 0, 1])
         K = np.array([
             [       0, -axis[2],  axis[1]],
             [ axis[2],        0, -axis[0]],
