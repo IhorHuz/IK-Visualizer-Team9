@@ -11,7 +11,9 @@ const FBX_H_JOINT_BASE = preload("res://visuals/horizontal_joint_base_002.fbx")
 const FBX_H_JOINT_RECEPTICLE = preload("res://visuals/horizontal_joint_recepticle_001.fbx")
 
 const MODEL_SCALE := 1.0
-const DOF_AXES := ["Y", "Z", "Z", "Z", "Y"]
+const ACTIVE_JOINTS := 6
+const MAX_REACH := 22.0
+const DOF_AXES := ["Y", "Z", "Z", "Y", "Z", "Z"]
 
 
 var udp_peer := PacketPeerUDP.new()
@@ -37,6 +39,18 @@ var mode_label: Label
 var robot_arm_root: Node3D
 var robot_joints: Array[Node3D] = []
 var robot_fbx_parts: Array[Node3D] = []
+
+var target_handle: MeshInstance3D
+var is_dragging: bool = false
+
+# Manual joint control
+const JOINT_STEP := 0.1
+const MANUAL_RATE := 3.0
+var manual_angles: Array[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+var last_solver_angles: Array[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+var selected_joint: int = 0
+var joint_info_label: Label
+var manual_override: bool = false
 
 func _ready():
 	udp_peer.connect_to_host(server_ip, server_port)
@@ -66,20 +80,53 @@ func _ready():
 	$UI.add_child(mode_label)
 	update_mode_label()
 
+	joint_info_label = Label.new()
+	joint_info_label.position = Vector2(10, 80)
+	joint_info_label.add_theme_color_override("font_color", Color.CYAN)
+	$UI.add_child(joint_info_label)
+
 	build_robot_arm()
 
+	var handle_mat = StandardMaterial3D.new()
+	handle_mat.albedo_color = Color(1, 0.5, 0)
+	handle_mat.emission_enabled = true
+	handle_mat.emission = Color(1, 0.5, 0)
+	handle_mat.emission_energy_multiplier = 2.0
+
+	var handle_mesh = SphereMesh.new()
+	handle_mesh.radius = 0.3
+	handle_mesh.height = 0.6
+	target_handle = MeshInstance3D.new()
+	target_handle.mesh = handle_mesh
+	target_handle.material_override = handle_mat
+	add_child(target_handle)
+
 	draw_grid()
+	update_joint_info_label()
 
-func _process(_delta):
-	if renderer_mode == RendererMode.ROBOT:
-		return
+func _process(delta):
+	if manual_override:
+		if Input.is_key_pressed(KEY_Q):
+			apply_manual_adjust(-MANUAL_RATE * delta)
+		if Input.is_key_pressed(KEY_W):
+			apply_manual_adjust(MANUAL_RATE * delta)
 
-	var target_3d = get_3d_mouse_pos()
+	var target_3d = target_handle.global_position
+	if is_dragging:
+		var mouse_3d = get_3d_mouse_pos()
+		if mouse_3d != Vector3.ZERO:
+			if mouse_3d.length() > MAX_REACH * 1.2:
+				mouse_3d = mouse_3d.normalized() * MAX_REACH * 1.2
+			target_3d = mouse_3d
+			target_handle.global_position = target_3d
+
 	var selected_algo = algo_dropdown.get_item_text(algo_dropdown.selected)
+
+	var mode_str = "ROBOT" if renderer_mode == RendererMode.ROBOT else "3D"
 	var data_to_send = {
 		"target_pos": [target_3d.x, target_3d.y, target_3d.z],
 		"algo": selected_algo,
-		"mode": "3D"
+		"mode": mode_str
 	}
 	udp_peer.put_packet(JSON.stringify(data_to_send).to_utf8_buffer())
 
@@ -232,52 +279,36 @@ func build_robot_arm():
 
 	robot_arm_root.visible = (renderer_mode == RendererMode.ROBOT)
 
-func print_hierarchy(node: Node, depth: int):
-	var indent = "  ".repeat(depth)
-	var nod = node as Node3D
-	if nod:
-		print(indent, node.name, " pos=", nod.position, " rot=", nod.rotation, " scale=", nod.scale)
-	else:
-		print(indent, node.name)
-	for child in node.get_children():
-		print_hierarchy(child, depth + 1)
-
-func print_hierarchy_aabb(node: Node, depth: int):
-	var indent = "  ".repeat(depth)
-	var mi := node as MeshInstance3D
-	if mi and mi.mesh:
-		var aabb = mi.get_aabb()
-		print(indent, node.name, " mesh AABB pos=", aabb.position, " size=", aabb.size)
-	for child in node.get_children():
-		print_hierarchy_aabb(child, depth + 1)
-
 func draw_robot_arm(positions: Array, angles: Array):
-	if positions.size() < 6:
+	if positions.size() < 7:
 		return
 
 	robot_arm_root.visible = true
 
 	robot_arm_root.global_position = Vector3(positions[0][0], positions[0][1], positions[0][2])
 
-	for i in range(robot_joints.size()):
-		if i < angles.size():
-			var angle = angles[i]
-			match DOF_AXES[i] if i < DOF_AXES.size() else "Z":
-				"Y":
-					robot_joints[i].rotation.y = angle
-				"Z":
-					robot_joints[i].rotation.z = angle
-				_:
-					robot_joints[i].rotation = Vector3.ZERO
-
-	bone_mesh.clear_surfaces()
-	bone_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-	for i in range(robot_joints.size() - 1):
-		var color = Color.ORANGE_RED
-		bone_mesh.surface_set_color(color)
-		bone_mesh.surface_add_vertex(robot_joints[i].global_position)
-		bone_mesh.surface_add_vertex(robot_joints[i + 1].global_position)
-	bone_mesh.surface_end()
+	for i in range(min(robot_joints.size(), ACTIVE_JOINTS)):
+		var angle: float
+		if i < manual_angles.size() and manual_override:
+			angle = manual_angles[i]
+		elif i < angles.size():
+			angle = angles[i]
+			if i < last_solver_angles.size():
+				last_solver_angles[i] = angle
+			if i < manual_angles.size():
+				manual_angles[i] = angle
+		else:
+			continue
+		match DOF_AXES[i] if i < DOF_AXES.size() else "Z":
+			"Y":
+				robot_joints[i].rotation.y = angle
+			"X":
+				robot_joints[i].rotation.x = angle
+			"Z":
+				robot_joints[i].rotation.z = angle
+			_:
+				robot_joints[i].rotation = Vector3.ZERO
+	update_joint_info_label()
 
 func get_3d_mouse_pos() -> Vector3:
 	var mouse_pos = get_viewport().get_mouse_position()
@@ -329,20 +360,55 @@ func _input(event):
 		pivot.rotation.x = clamp(pivot.rotation.x, -PI/4, PI/4)
 
 	if event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed:
+				var mouse_3d = get_3d_mouse_pos()
+				if mouse_3d != Vector3.ZERO:
+					target_handle.global_position = mouse_3d
+					is_dragging = true
+			else:
+				is_dragging = false
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			target_height += 1.0
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			target_height -= 1.0
-
 		target_height = clamp(target_height, 0.0, camera.global_position.y - 2.0)
-
-	if event is InputEventKey and event.keycode == KEY_V and event.pressed and not event.echo:
-		toggle_renderer()
+	if event is InputEventKey and event.pressed and not event.echo:
+		match event.keycode:
+			KEY_V:
+				toggle_renderer()
+			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6:
+				var idx = event.keycode - KEY_1
+				if idx < ACTIVE_JOINTS:
+					selected_joint = idx
+					manual_override = true
+			KEY_R:
+				manual_override = false
+				for i in range(ACTIVE_JOINTS):
+					if i < last_solver_angles.size():
+						manual_angles[i] = last_solver_angles[i]
 
 func toggle_renderer():
 	renderer_mode = RendererMode.STICK if renderer_mode == RendererMode.ROBOT else RendererMode.ROBOT
 	clear_arm()
 	update_mode_label()
+
+	target_handle.global_position = Vector3(5, 0, 5)
+	is_dragging = false
+	manual_override = false
+	for i in range(ACTIVE_JOINTS):
+		manual_angles[i] = 0.0
+	selected_joint = 0
+
+	var selected_algo = algo_dropdown.get_item_text(algo_dropdown.selected)
+	var mode_str = "ROBOT" if renderer_mode == RendererMode.ROBOT else "3D"
+	var data_to_send = {
+		"target_pos": [5, 0, 5],
+		"algo": selected_algo,
+		"mode": mode_str,
+		"reset": true
+	}
+	udp_peer.put_packet(JSON.stringify(data_to_send).to_utf8_buffer())
 
 func clear_arm():
 	for j in joints_3d:
@@ -359,6 +425,18 @@ func update_mode_label():
 		RendererMode.ROBOT: "ROBOT ARM [V]"
 	}
 	mode_label.text = "Mode: " + names[renderer_mode]
+
+func update_joint_info_label():
+	var mode_str = "MANUAL" if manual_override else "IK"
+	var names = ["J0(Y)", "J1(Z)", "J2(Z)", "J3(Y)", "J4(Z)", "J5(Z)"]
+	var sel = selected_joint
+	joint_info_label.text = "Mode: %s | Selected: %s [%d] = %.2f rad" % [mode_str, names[sel], sel, manual_angles[sel]]
+
+func apply_manual_adjust(delta: float):
+	manual_override = true
+	manual_angles[selected_joint] += delta
+	if selected_joint < len(DOF_AXES) and DOF_AXES[selected_joint] == "Z":
+		manual_angles[selected_joint] = clamp(manual_angles[selected_joint], -1.57, 1.57)
 
 func apply_glow(node: Node, color: Color):
 	for child in node.get_children():
