@@ -7,7 +7,7 @@ from stick.ccd_3d import ccd_iteration_3d
 from stick.jacobian_3d import jacobian_iteration_3d
 from stick.fabrik_3d import fabrik_iteration_3d
 
-from robot.ccd_robot_3d import ccd_iteration_3d as ccd_robot
+from robot.ccd_robot_3d import CcdSolver3d as CcdRobot
 from robot.jacobian_robot_3d import jacobian_iteration_3d as jacobian_robot
 from robot.fabrik_robot_3d import fabrik_iteration_3d as fabrik_robot
 
@@ -189,12 +189,8 @@ def solve_single(message, initial_joints, accumulated_angles=None):
 
     if mode == "ROBOT":
         if algorithm_choice == "CCD":
-            joints_list = [j.to_list() for j in initial_joints]
-            result, accumulated_angles = ccd_robot(joints_list, [tx, ty, tz],
-                                                     accumulated_angles=accumulated_angles,
-                                                     active_joints=ACTIVE_JOINTS,
-                                                     step_size=0.3,
-                                                     segment_lengths=SEGMENT_LENGTHS)
+            robot = CcdRobot(initial_joints, target_vec, initial_angles=accumulated_angles)
+            result, accumulated_angles = robot.solve()
             accumulated_angles = wrap_angles(accumulated_angles)
             new_joints = [Vec3(float(j[0]), float(j[1]), float(j[2])) for j in result]
             angles = list(accumulated_angles)
