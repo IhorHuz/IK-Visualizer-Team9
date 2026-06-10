@@ -53,7 +53,6 @@ class CcdSolver3d:
         ]
         self.n = len(joints)
         self.tol = 0.05
-        self.max_iterations = 40
 
         if initial_angles is not None:
             self.angles = list(initial_angles)
@@ -65,62 +64,60 @@ class CcdSolver3d:
             self.target[1] = 0.0
 
         joints, R_frames = forward_kinematics(self.angles, self.lengths, self.origin)
+        if np.linalg.norm(joints[-1] - self.target) < self.tol:
+            return joints, self.angles
 
-        for iteration in range(self.max_iterations):
-            if np.linalg.norm(joints[-1] - self.target) < self.tol:
-                break
+        for i in range(self.n - 2, -1, -1):
+            joints, R_frames = forward_kinematics(self.angles, self.lengths, self.origin)
 
-            for i in range(self.n - 2, -1, -1):
-                joints, R_frames = forward_kinematics(self.angles, self.lengths, self.origin)
+            e_world = joints[-1] - joints[i]
+            t_world = self.target - joints[i]
 
-                e_world = joints[-1] - joints[i]
-                t_world = self.target - joints[i]
+            R_parent_T = R_frames[i].T
+            e_local = np.dot(R_parent_T, e_world)
+            t_local = np.dot(R_parent_T, t_world)
 
-                R_parent_T = R_frames[i].T
-                e_local = np.dot(R_parent_T, e_world)
-                t_local = np.dot(R_parent_T, t_world)
+            if DOF_AXES[i] == "Y":
+                ang_e = math.atan2(-e_local[2], e_local[0])
+                ang_t = math.atan2(-t_local[2], t_local[0])
+                delta = ang_t - ang_e
+            else:
+                ang_e = math.atan2(-e_local[0], e_local[1])
+                ang_t = math.atan2(-t_local[0], t_local[1])
+                delta = ang_t - ang_e
 
-                if DOF_AXES[i] == "Y":
-                    ang_e = math.atan2(-e_local[2], e_local[0])
-                    ang_t = math.atan2(-t_local[2], t_local[0])
-                    delta = ang_t - ang_e
-                else:
-                    ang_e = math.atan2(-e_local[0], e_local[1])
-                    ang_t = math.atan2(-t_local[0], t_local[1])
-                    delta = ang_t - ang_e
+            delta = math.atan2(math.sin(delta), math.cos(delta))
 
-                delta = math.atan2(math.sin(delta), math.cos(delta))
+            old_angle = self.angles[i]
+            new_angle = old_angle + delta
+            lim = ANGLE_LIMITS[i]
+            if lim is not None:
+                new_angle = np.clip(new_angle, lim[0], lim[1])
 
-                old_angle = self.angles[i]
-                new_angle = old_angle + delta
-                lim = ANGLE_LIMITS[i]
-                if lim is not None:
-                    new_angle = np.clip(new_angle, lim[0], lim[1])
+            actual_delta = new_angle - old_angle
 
-                actual_delta = new_angle - old_angle
+            self.angles[i] = new_angle
+            test_joints, _ = forward_kinematics(self.angles, self.lengths, self.origin)
 
-                self.angles[i] = new_angle
-                test_joints, _ = forward_kinematics(self.angles, self.lengths, self.origin)
+            if any(j[1] < -1e-4 for j in test_joints):
+                low, high = 0.0, 1.0
+                safe_angle = old_angle
 
-                if any(j[1] < -1e-4 for j in test_joints):
-                    low, high = 0.0, 1.0
-                    safe_angle = old_angle
+                for _ in range(8):
+                    mid = (low + high) / 2.0
+                    self.angles[i] = old_angle + mid * actual_delta
+                    chk_joints, _ = forward_kinematics(self.angles, self.lengths, self.origin)
 
-                    for _ in range(8):
-                        mid = (low + high) / 2.0
-                        self.angles[i] = old_angle + mid * actual_delta
-                        chk_joints, _ = forward_kinematics(self.angles, self.lengths, self.origin)
+                    if any(j[1] < -1e-4 for j in chk_joints):
+                        high = mid
+                    else:
+                        low = mid
+                        safe_angle = self.angles[i]
 
-                        if any(j[1] < -1e-4 for j in chk_joints):
-                            high = mid
-                        else:
-                            low = mid
-                            safe_angle = self.angles[i]
+                self.angles[i] = safe_angle
 
-                    self.angles[i] = safe_angle
-
-                if lim is None:
-                    self.angles[i] = math.atan2(math.sin(self.angles[i]), math.cos(self.angles[i]))
+            if lim is None:
+                self.angles[i] = math.atan2(math.sin(self.angles[i]), math.cos(self.angles[i]))
 
         joints, _ = forward_kinematics(self.angles, self.lengths, self.origin)
         return joints, self.angles

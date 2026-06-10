@@ -1,115 +1,127 @@
 import numpy as np
+import math
 
-def _local_to_world(joints, local_axes, i):
-    R = np.eye(3)
-    for k in range(i):
-        v = joints[k+1] - joints[k]
-        norm = np.linalg.norm(v)
-        if norm > 1e-5:
-            v_dir = v / norm
-            v_local = np.dot(R.T, v_dir)
-            if local_axes[k][0] == 1:
-                angle = np.arctan2(v_local[2], v_local[1])
-                c = np.cos(angle)
-                s = np.sin(angle)
-                R_j = np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
-            elif local_axes[k][1] == 1:
-                angle = np.arctan2(v_local[0], v_local[2])
-                c = np.cos(angle)
-                s = np.sin(angle)
-                R_j = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
-            else:
-                angle = np.arctan2(v_local[0], v_local[1])
-                c = np.cos(angle)
-                s = np.sin(angle)
-                R_j = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-            R = np.dot(R, R_j)
-    return np.dot(R, local_axes[i])
+ANGLE_LIMITS = [
+    None,  # J0: unbounded yaw
+    (-1.57, 1.57),  # J1: shoulder pitch ±90°
+    (-1.57, 1.57),  # J2: elbow pitch ±90°
+    None,  # J3: unbounded yaw
+    (-1.57, 1.57),  # J4: wrist pitch ±90°
+    (-1.57, 1.57),  # J5: wrist Z ±90°
+]
 
-def _lock_inactive(joints, active):
-    if active >= len(joints) - 1:
-        return
-    dir_vec = joints[-1] - joints[active]
-    dir_norm = np.linalg.norm(dir_vec)
-    if dir_norm > 1e-5:
-        dir_u = dir_vec / dir_norm
-        pos = joints[active].copy()
-        lengths = [np.linalg.norm(joints[i+1] - joints[i]) for i in range(active, len(joints) - 1)]
-        for i in range(active, len(joints) - 1):
-            pos = pos + dir_u * lengths[i - active]
-            joints[i+1] = pos
+DOF_AXES = ["Y", "Z", "Z", "Y", "Z", "Z"]
 
-def _clamp_above_ground(joints):
-    for i in range(1, len(joints)):
-        if joints[i][1] < 0:
-            joints[i][1] = 0.0
 
-def jacobian_iteration_3d(joints, target, method='dls', learning_rate=0.2, damping=0.1, active_joints=5):
-    joints = np.array(joints, dtype=float)
-    target = np.array(target, dtype=float)
-    if target[1] < 0:
-        target[1] = 0.0
+def get_rotation_matrix(axis, angle):
+    angle = float(angle)
+    c = math.cos(angle)
+    s = math.sin(angle)
+    if axis == "Y":
+        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+    elif axis == "Z":
+        return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+    return np.eye(3)
 
-    end_effector = joints[-1]
-    delta_target = target - end_effector
 
-    if np.linalg.norm(delta_target) < 0.1:
-        return [list(j) for j in joints]
+def forward_kinematics(angles, lengths, origin):
+    n_joints = len(lengths) + 1
+    joints = [np.zeros(3) for _ in range(n_joints)]
+    joints[0] = np.array(origin, dtype=float)
 
-    num_joints = len(joints) - 1
-    local_axes = [
-        np.array([0, 1, 0]),
-        np.array([0, 0, 1]),
-        np.array([0, 0, 1]),
-        np.array([0, 1, 0]),
-        np.array([0, 0, 1]),
-        np.array([0, 0, 1]),
-    ]
+    current_R = np.eye(3)
+    R_frames = []
 
-    J = np.zeros((3, num_joints))
+    for i in range(len(lengths)):
+        R_frames.append(current_R.copy())
+        current_R = np.dot(current_R, get_rotation_matrix(DOF_AXES[i], angles[i]))
+        world_dir = np.dot(current_R, np.array([0.0, 1.0, 0.0]))
+        joints[i + 1] = joints[i] + world_dir * lengths[i]
 
-    for i in range(num_joints):
-        if i < active_joints:
-            r = end_effector - joints[i]
-            axis = _local_to_world(joints, local_axes, i)
-            J[:, i] = np.cross(axis, r)
+    return joints, R_frames
 
-    if method == 'dls':
-        lambda_sq = damping ** 2
-        I = np.eye(3)
-        dls_matrix = np.dot(J, J.T) + lambda_sq * I
-        dls_inv = np.linalg.inv(dls_matrix)
-        J_dls = np.dot(J.T, dls_inv)
-        delta_theta = np.dot(J_dls, delta_target) * learning_rate
-    elif method == 'transpose':
-        delta_theta = learning_rate * np.dot(J.T, delta_target)
-    elif method == 'pseudoinverse':
-        J_pinv = np.linalg.pinv(J)
-        delta_theta = np.dot(J_pinv, delta_target) * learning_rate
-    else:
-        delta_theta = np.zeros(num_joints)
 
-    for i in range(num_joints):
-        angle = delta_theta[i]
-        if abs(angle) < 1e-5:
-            continue
+class JacobianSolver3d:
+    def __init__(self, joints, target, initial_angles=None):
+        self.origin = np.array([joints[0].x, joints[0].y, joints[0].z], dtype=float)
+        self.target = np.array([target.x, target.y, target.z], dtype=float)
+        self.lengths = [
+            np.linalg.norm(
+                np.array([joints[i + 1].x, joints[i + 1].y, joints[i + 1].z]) -
+                np.array([joints[i].x, joints[i].y, joints[i].z])
+            ) for i in range(len(joints) - 1)
+        ]
+        self.n = len(joints)
+        self.tol = 0.05
 
-        if i >= active_joints:
-            continue
+        self.damping = 0.2
+        self.step_size = 0.1
 
-        axis = _local_to_world(joints, local_axes, i)
-        K = np.array([
-            [       0, -axis[2],  axis[1]],
-            [ axis[2],        0, -axis[0]],
-            [-axis[1],  axis[0],        0]
-        ])
-        R = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * np.dot(K, K)
+        if initial_angles is not None:
+            self.angles = list(initial_angles)
+        else:
+            self.angles = [0.0] * (self.n - 1)
 
-        current_joint = joints[i].copy()
-        for j in range(i + 1, len(joints)):
-            v = joints[j] - current_joint
-            joints[j] = current_joint + np.dot(R, v)
+    def solve(self):
+        if self.target[1] < 0:
+            self.target[1] = 0.0
+        joints, R_frames = forward_kinematics(self.angles, self.lengths, self.origin)
+        p_ee = joints[-1]
 
-    _lock_inactive(joints, active_joints)
-    _clamp_above_ground(joints)
-    return [list(j) for j in joints]
+        delta_x = self.target - p_ee
+        if np.linalg.norm(delta_x) < self.tol:
+            return joints, self.angles
+
+        num_axes = len(joints) - 1
+        J = np.zeros((3, num_axes))
+
+        for i in range(num_axes):
+            local_axis = np.array([0.0, 1.0, 0.0]) if DOF_AXES[i] == "Y" else np.array([0.0, 0.0, 1.0])
+            world_axis = np.dot(R_frames[i], local_axis)
+
+            r_vector = p_ee - joints[i]
+            J[:, i] = np.cross(world_axis, r_vector)
+
+        J_JT = np.dot(J, J.T)
+        damping_matrix = J_JT + (self.damping ** 2) * np.eye(3)
+        inv_part = np.linalg.inv(damping_matrix)
+
+        delta_theta = np.dot(J.T, np.dot(inv_part, delta_x))
+
+        proposed_angles = []
+        for i in range(num_axes):
+            new_ang = self.angles[i] + delta_theta[i] * self.step_size
+            lim = ANGLE_LIMITS[i]
+            if lim is not None:
+                new_ang = np.clip(new_ang, lim[0], lim[1])
+            proposed_angles.append(new_ang)
+
+        actual_deltas = [proposed_angles[i] - self.angles[i] for i in range(num_axes)]
+
+        test_angles = [self.angles[i] + actual_deltas[i] for i in range(num_axes)]
+        test_joints, _ = forward_kinematics(test_angles, self.lengths, self.origin)
+
+        safe_scale = 1.0
+        if any(j[1] < -1e-4 for j in test_joints):
+            low, high = 0.0, 1.0
+            safe_scale = 0.0
+
+            for _ in range(8):
+                mid = (low + high) / 2.0
+                chk_angles = [self.angles[i] + mid * actual_deltas[i] for i in range(num_axes)]
+                chk_joints, _ = forward_kinematics(chk_angles, self.lengths, self.origin)
+
+                if any(j[1] < -1e-4 for j in chk_joints):
+                    high = mid
+                else:
+                    low = mid
+                    safe_scale = mid
+
+        for i in range(num_axes):
+            self.angles[i] += safe_scale * actual_deltas[i]
+
+            if ANGLE_LIMITS[i] is None:
+                self.angles[i] = math.atan2(math.sin(self.angles[i]), math.cos(self.angles[i]))
+
+        next_joints, _ = forward_kinematics(self.angles, self.lengths, self.origin)
+        return next_joints, self.angles

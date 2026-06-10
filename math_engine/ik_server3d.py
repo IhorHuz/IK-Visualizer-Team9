@@ -8,7 +8,7 @@ from stick.jacobian_3d import jacobian_iteration_3d
 from stick.fabrik_3d import fabrik_iteration_3d
 
 from robot.ccd_robot_3d import CcdSolver3d as CcdRobot
-from robot.jacobian_robot_3d import jacobian_iteration_3d as jacobian_robot
+from robot.jacobian_robot_3d import JacobianSolver3d as JacobianRobot
 from robot.fabrik_robot_3d import fabrik_iteration_3d as fabrik_robot
 
 
@@ -202,10 +202,11 @@ def solve_single(message, initial_joints, accumulated_angles=None):
             angles = compute_joint_angles(new_joints)
             clamped = clamp_angles(angles)
         elif algorithm_choice == "JACOBIAN":
-            joints_list = [j.to_list() for j in initial_joints]
-            result = jacobian_robot(joints_list, [tx, ty, tz], method='dls', active_joints=ACTIVE_JOINTS)
+            jacobian_solver = JacobianRobot(initial_joints, target_vec, initial_angles=accumulated_angles)
+            result, accumulated_angles = jacobian_solver.solve()
+            accumulated_angles = wrap_angles(accumulated_angles)
             new_joints = [Vec3(float(j[0]), float(j[1]), float(j[2])) for j in result]
-            angles = compute_joint_angles(new_joints)
+            angles = list(accumulated_angles)
             clamped = clamp_angles(angles)
         else:
             new_joints = initial_joints
