@@ -2,9 +2,7 @@
 
 Hello to one and all. This repository is created to organise our work as a team during the Lodz University of Technology Team Project course.
 
-This repository contains the source code, research, and documentation for the project. The goal of this project is to build an educational, interactive sandbox that visualizes how different Inverse Kinematics (IK) algorithms solve mathematical paths for multi-joint chains (like robotic arms) in real-time.
-
-Primarily, it is an educational interactive 3D sandbox for visualizing Inverse Kinematics (IK) algorithms on a 6-DOF robot arm in real time. Built with Godot 4 and Python.
+This repository contains the source code, research, and documentation for the project. Primarily, it is an educational interactive 3D sandbox for visualizing Inverse Kinematics (IK) algorithms on a 6-DOF robot arm in real time. Built with Godot 4 and Python.
 
 ## How to Run
 
