@@ -24,7 +24,7 @@ var server_port := 5005
 @onready var pivot = $CameraPivot
 @onready var algo_dropdown = $UI/OptionButton
 
-var renderer_mode: RendererMode = RendererMode.STICK
+var renderer_mode: RendererMode = RendererMode.ROBOT
 
 var joints_3d: Array[Node3D] = []
 var bone_mesh_instance := MeshInstance3D.new()
@@ -46,11 +46,21 @@ var is_dragging: bool = false
 # Manual joint control
 const JOINT_STEP := 0.1
 const MANUAL_RATE := 3.0
+const HEIGHT_RATE := 5.0
 var manual_angles: Array[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 var last_solver_angles: Array[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 var selected_joint: int = 0
 var joint_info_label: Label
 var manual_override: bool = false
+
+# Motion trail
+var trail_enabled: bool = false
+var trail_points: Array[Vector3] = []
+const TRAIL_MAX_POINTS := 300
+var trail_mesh_instance := MeshInstance3D.new()
+var trail_mesh := ImmediateMesh.new()
+var last_algo: String = "FABRIK"
+
 
 func _ready():
 	udp_peer.connect_to_host(server_ip, server_port)
@@ -69,6 +79,16 @@ func _ready():
 	grid_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	grid_mesh_instance.material_override = grid_mat
 	add_child(grid_mesh_instance)
+
+	trail_mesh_instance.mesh = trail_mesh
+	var trail_mat = StandardMaterial3D.new()
+	trail_mat.albedo_color = Color(0, 1, 1, 0.3)
+	trail_mat.emission_enabled = true
+	trail_mat.emission = Color(0, 0.8, 0.8)
+	trail_mat.vertex_color_use_as_albedo = true
+	trail_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	trail_mesh_instance.material_override = trail_mat
+	add_child(trail_mesh_instance)
 
 	algo_dropdown.add_item("FABRIK")
 	algo_dropdown.add_item("CCD")
@@ -111,6 +131,12 @@ func _process(delta):
 		if Input.is_key_pressed(KEY_W):
 			apply_manual_adjust(MANUAL_RATE * delta)
 
+	if Input.is_key_pressed(KEY_UP):
+		target_height += HEIGHT_RATE * delta
+	if Input.is_key_pressed(KEY_DOWN):
+		target_height -= HEIGHT_RATE * delta
+	target_height = clamp(target_height, 0.0, camera.global_position.y - 2.0)
+
 	var target_3d = target_handle.global_position
 	if is_dragging:
 		var mouse_3d = get_3d_mouse_pos()
@@ -139,6 +165,19 @@ func _process(delta):
 				var positions = data_received["positions"]
 				var angles = data_received.get("angles", [])
 				draw_arm(positions, angles)
+
+				# Check algo change to clear trail
+				if last_algo != selected_algo:
+					last_algo = selected_algo
+					trail_points.clear()
+					trail_mesh.clear_surfaces()
+
+				if trail_enabled and positions.size() > 0:
+					var ep = Vector3(positions[-1][0], positions[-1][1], positions[-1][2])
+					trail_points.append(ep)
+					if trail_points.size() > TRAIL_MAX_POINTS:
+						trail_points.pop_front()
+					draw_trail()
 
 func draw_arm(positions: Array, angles: Array):
 	match renderer_mode:
@@ -310,6 +349,19 @@ func draw_robot_arm(positions: Array, angles: Array):
 				robot_joints[i].rotation = Vector3.ZERO
 	update_joint_info_label()
 
+func draw_trail():
+	trail_mesh.clear_surfaces()
+	if trail_points.size() < 2:
+		return
+	trail_mesh.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
+	var alpha_step = 0.6 / max(trail_points.size() - 1, 1)
+	for i in range(trail_points.size()):
+		var a = 0.1 + i * alpha_step
+		trail_mesh.surface_set_color(Color(0, 1, 1, a))
+		trail_mesh.surface_add_vertex(trail_points[i])
+	trail_mesh.surface_end()
+
+
 func get_3d_mouse_pos() -> Vector3:
 	var mouse_pos = get_viewport().get_mouse_position()
 	var from = camera.project_ray_origin(mouse_pos)
@@ -366,13 +418,10 @@ func _input(event):
 				if mouse_3d != Vector3.ZERO:
 					target_handle.global_position = mouse_3d
 					is_dragging = true
+					trail_points.clear()
+					trail_mesh.clear_surfaces()
 			else:
 				is_dragging = false
-		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			target_height += 1.0
-		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			target_height -= 1.0
-		target_height = clamp(target_height, 0.0, camera.global_position.y - 2.0)
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_V:
@@ -387,11 +436,18 @@ func _input(event):
 				for i in range(ACTIVE_JOINTS):
 					if i < last_solver_angles.size():
 						manual_angles[i] = last_solver_angles[i]
+			KEY_T:
+				trail_enabled = not trail_enabled
+				if not trail_enabled:
+					trail_points.clear()
+					trail_mesh.clear_surfaces()
 
 func toggle_renderer():
 	renderer_mode = RendererMode.STICK if renderer_mode == RendererMode.ROBOT else RendererMode.ROBOT
 	clear_arm()
 	update_mode_label()
+	trail_points.clear()
+	trail_mesh.clear_surfaces()
 
 	target_handle.global_position = Vector3(5, 0, 5)
 	is_dragging = false
@@ -424,7 +480,8 @@ func update_mode_label():
 		RendererMode.STICK: "STICK ARM [V]",
 		RendererMode.ROBOT: "ROBOT ARM [V]"
 	}
-	mode_label.text = "Mode: " + names[renderer_mode]
+	var trail_suffix = " | TRAIL [T]" if trail_enabled else ""
+	mode_label.text = "Mode: " + names[renderer_mode] + trail_suffix
 
 func update_joint_info_label():
 	var mode_str = "MANUAL" if manual_override else "IK"
