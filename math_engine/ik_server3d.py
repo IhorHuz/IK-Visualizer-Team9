@@ -180,6 +180,14 @@ def solve_single(message, initial_joints, accumulated_angles=None):
     distance_to_target = vector_to_target.magnitude
 
     if distance_to_target > MAX_REACH:
+        if algorithm_choice == "JACOBIAN":
+            # For Jacobian, instantly snap back to neutral vertical pose
+            # to completely avoid infinite joint velocity explosions
+            accumulated_angles = [0.0] * ACTIVE_JOINTS
+            clamped = accumulated_angles
+            new_joints = build_vertical_chain(SEGMENT_LENGTHS)
+            positions = [j.to_list() for j in new_joints]
+            return new_joints, positions, clamped, accumulated_angles
         clamped_vector = vector_to_target * ((MAX_REACH - 0.01) / distance_to_target)
         target_vec = base_pos + clamped_vector
         tx, ty, tz = target_vec.x, target_vec.y, target_vec.z
