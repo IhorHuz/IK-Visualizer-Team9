@@ -9,8 +9,6 @@ from stick.fabrik_3d import fabrik_iteration_3d
 
 from robot.ccd_robot_3d import CcdSolver3d as CcdRobot
 from robot.jacobian_robot_3d import JacobianSolver3d as JacobianRobot
-from robot.fabrik_robot_3d import fabrik_iteration_3d as fabrik_robot
-
 
 class Vec3:
     def __init__(self, x, y, z):
@@ -37,12 +35,11 @@ class Vec3:
     def to_list(self):
         return [self.x, self.y, self.z]
 
-
 # --- CONFIGURATION ---
 SEGMENT_LENGTHS = [1.2, 3.1, 0.85, 1.3, 5.25, 0.825]
 JOINT_COUNT = len(SEGMENT_LENGTHS) + 1
 MAX_REACH = sum(SEGMENT_LENGTHS)
-
+TARGET_FRAME_OFFSET = math.pi/2
 ACTIVE_JOINTS = 6
 
 DOF_AXES = ["Y", "Z", "Z", "Y", "Z", "Z"]
@@ -68,7 +65,7 @@ def get_rotation_matrix(axis, angle):
 
 def compute_joint_angles(joints):
     angles = []
-    current_R = np.eye(3)
+    R = np.eye(3)
 
     for i in range(len(SEGMENT_LENGTHS)):
         if i >= ACTIVE_JOINTS:
@@ -80,45 +77,44 @@ def compute_joint_angles(joints):
         if axis == "Y":
             if i + 1 < len(joints):
                 w_world = np.array([
-                    joints[-1].x - joints[i+1].x,
-                    joints[-1].y - joints[i+1].y,
-                    joints[-1].z - joints[i+1].z
+                    joints[-1].x - joints[i + 1].x,
+                    joints[-1].y - joints[i + 1].y,
+                    joints[-1].z - joints[i + 1].z
                 ])
-                wn = np.linalg.norm(w_world)
-                if wn > 1e-8:
-                    w_local = np.dot(current_R.T, w_world / wn)
-                    w_local[1] = 0.0
-                    pn = np.linalg.norm(w_local)
-                    if pn > 1e-8:
-                        angle = math.atan2(w_local[0], w_local[2])
-                    else:
-                        angle = 0.0
+                w_local = np.dot(R.T, w_world)
+
+                if math.hypot(w_local[2], w_local[0]) > 1e-8:
+                    angle = math.atan2(w_local[2], -w_local[0])
                 else:
                     angle = 0.0
             else:
                 angle = 0.0
         else:
             v_world = np.array([
-                joints[i+1].x - joints[i].x,
-                joints[i+1].y - joints[i].y,
-                joints[i+1].z - joints[i].z
+                joints[i + 1].x - joints[i].x,
+                joints[i + 1].y - joints[i].y,
+                joints[i + 1].z - joints[i].z
             ])
-            v_local = np.dot(current_R.T, v_world)
-            v_local[2] = 0.0
+            v_local = np.dot(R.T, v_world)
             pn = np.linalg.norm(v_local)
+
             if pn > 1e-8:
-                v_local = v_local / pn
-                angle = math.atan2(v_local[0], v_local[1])
+                v_local /= pn
+                if axis == "Z":
+                    angle = math.atan2(-v_local[0], v_local[1])
+                elif axis == "X":
+                    angle = math.atan2(v_local[2], v_local[1])
+                else:
+                    angle = 0.0
             else:
                 angle = 0.0
 
         angles.append(float(angle))
-        current_R = np.dot(current_R, get_rotation_matrix(axis, angle))
+        R = np.dot(R, get_rotation_matrix(axis, angle))
 
     return angles
 
 
-# --- Angle limit table (mirrors fabrik_robot_3d) ---
 ANGLE_LIMITS = [
     None,             # J0: unbounded yaw
     (-1.57, 1.57),    # J1: shoulder pitch ±90°
@@ -136,12 +132,14 @@ def fk_from_angles(angles):
         angle = angles[i] if i < len(angles) else 0.0
         axis = DOF_AXES[i]
         if axis == "Y":
-            world_dir = np.array([0.0, 1.0, 0.0])
+            local_dir = np.array([0.0, 1.0, 0.0])
+            world_dir = np.dot(R, local_dir)
             R = np.dot(R, get_rotation_matrix("Y", angle))
         else:
             local_dir = np.array([np.sin(angle), np.cos(angle), 0.0])
             world_dir = np.dot(R, local_dir)
             R = np.dot(R, get_rotation_matrix(axis, angle))
+
         joints.append(joints[-1] + world_dir * SEGMENT_LENGTHS[i])
     return joints
 
@@ -163,7 +161,6 @@ def wrap_angles(angles):
     return wrapped
 
 
-# --- Solver dispatch ---
 def solve_single(message, initial_joints, accumulated_angles=None):
     tx, ty, tz = message.get("target_pos", [0, 0, 0])
     target_vec = Vec3(tx, ty, tz)
@@ -187,6 +184,16 @@ def solve_single(message, initial_joints, accumulated_angles=None):
         target_vec = base_pos + clamped_vector
         tx, ty, tz = target_vec.x, target_vec.y, target_vec.z
 
+    cos_o = math.cos(TARGET_FRAME_OFFSET)
+    sin_o = math.sin(TARGET_FRAME_OFFSET)
+
+    rotated_x = tx * cos_o + tz * sin_o
+    rotated_y = ty
+    rotated_z = -tx * sin_o + tz * cos_o
+
+    target_fabrik = Vec3(rotated_x, rotated_y, rotated_z)
+
+
     if mode == "ROBOT":
         if algorithm_choice == "CCD":
             robot = CcdRobot(initial_joints, target_vec, initial_angles=accumulated_angles)
@@ -196,11 +203,40 @@ def solve_single(message, initial_joints, accumulated_angles=None):
             angles = list(accumulated_angles)
             clamped = clamp_angles(angles)
         elif algorithm_choice == "FABRIK":
-            chain = fabrik_robot(initial_joints, target_vec, active_joints=ACTIVE_JOINTS)
-            chain.solve()
-            new_joints = [Vec3(float(j[0]), float(j[1]), float(j[2])) for j in chain.joints]
-            angles = compute_joint_angles(new_joints)
-            clamped = clamp_angles(angles)
+            current_angles = list(accumulated_angles)
+            base_yaw = math.atan2(target_fabrik.x, target_fabrik.z)
+            current_angles[0] = base_yaw
+
+            for _ in range(8):
+                current_joints_np = fk_from_angles(current_angles)
+                current_joints = [Vec3(float(j[0]), float(j[1]), float(j[2])) for j in current_joints_np]
+                chain = fabrik_iteration_3d(current_joints, target_fabrik)
+                chain.solve()
+                ideal_joints = chain.joints
+
+                theta = math.atan2(target_fabrik.x, target_fabrik.z)
+                ux = math.sin(theta)
+                uz = math.cos(theta)
+
+                for j in ideal_joints:
+                    dx = j.x - base_pos.x
+                    dz = j.z - base_pos.z
+
+                    planar_reach = dx * ux + dz * uz
+                    if planar_reach < 0:
+                        planar_reach = 0.0
+                    j.x = base_pos.x + planar_reach * ux
+                    j.z = base_pos.z + planar_reach * uz
+
+                angles = compute_joint_angles(ideal_joints)
+                angles[0] = base_yaw
+                clamped = clamp_angles(angles)
+                clamped = wrap_angles(clamped)
+                current_angles = clamped
+
+            final_joints_np = fk_from_angles(current_angles)
+            new_joints = [Vec3(float(j[0]), float(j[1]), float(j[2])) for j in final_joints_np]
+            accumulated_angles = current_angles
         elif algorithm_choice == "JACOBIAN":
             jacobian_solver = JacobianRobot(initial_joints, target_vec, initial_angles=accumulated_angles)
             result, accumulated_angles = jacobian_solver.solve()
