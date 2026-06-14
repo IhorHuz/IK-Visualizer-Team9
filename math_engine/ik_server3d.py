@@ -165,11 +165,13 @@ def solve_single(message, initial_joints, accumulated_angles=None):
     tx, ty, tz = message.get("target_pos", [0, 0, 0])
     target_vec = Vec3(tx, ty, tz)
 
-    algorithm_choice = message.get("algo", "FABRIK")
+    algorithm_choice = message.get("algo", "CCD")
     mode = message.get("mode", "STICK")
 
     if accumulated_angles is None:
         accumulated_angles = [0.0] * ACTIVE_JOINTS
+
+    locked_joints = message.get("locked_joints", [False] * ACTIVE_JOINTS)
 
     if message.get("reset", False):
         initial_joints = build_vertical_chain(SEGMENT_LENGTHS)
@@ -204,7 +206,7 @@ def solve_single(message, initial_joints, accumulated_angles=None):
 
     if mode == "ROBOT":
         if algorithm_choice == "CCD":
-            robot = CcdRobot(initial_joints, target_vec, initial_angles=accumulated_angles)
+            robot = CcdRobot(initial_joints, target_vec, initial_angles=accumulated_angles, locked_joints=locked_joints)
             result, accumulated_angles = robot.solve()
             accumulated_angles = wrap_angles(accumulated_angles)
             new_joints = [Vec3(float(j[0]), float(j[1]), float(j[2])) for j in result]
@@ -240,13 +242,16 @@ def solve_single(message, initial_joints, accumulated_angles=None):
                 angles[0] = base_yaw
                 clamped = clamp_angles(angles)
                 clamped = wrap_angles(clamped)
+                for i in range(ACTIVE_JOINTS):
+                    if i < len(locked_joints) and locked_joints[i]:
+                        clamped[i] = current_angles[i]
                 current_angles = clamped
 
             final_joints_np = fk_from_angles(current_angles)
             new_joints = [Vec3(float(j[0]), float(j[1]), float(j[2])) for j in final_joints_np]
             accumulated_angles = current_angles
         elif algorithm_choice == "JACOBIAN":
-            jacobian_solver = JacobianRobot(initial_joints, target_vec, initial_angles=accumulated_angles)
+            jacobian_solver = JacobianRobot(initial_joints, target_vec, initial_angles=accumulated_angles, locked_joints=locked_joints)
             result, accumulated_angles = jacobian_solver.solve()
             accumulated_angles = wrap_angles(accumulated_angles)
             new_joints = [Vec3(float(j[0]), float(j[1]), float(j[2])) for j in result]

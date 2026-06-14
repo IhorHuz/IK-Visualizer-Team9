@@ -29,6 +29,8 @@ This repository contains the source code, research, and documentation for the pr
 | **V**                  | Toggle between Stick Arm (skeleton) and Robot Arm (3D model) |
 | **1–6**                | Select joint J0–J5 (enters manual-override mode)             |
 | **Q / W (hold)**       | Decrease / increase selected joint angle (manual mode)       |
+| **R**                  | Exit manual-override mode, restore solver-driven IK          |
+| **L**                  | Toggle lock on selected joint (frozen by IK solvers)         |
 | **T**                  | Toggle endpoint motion trail (shows convergence path)        |
 | **Dropdown**           | Switch between CCD / FABRIK / Jacobian algorithms            |
 
@@ -46,6 +48,17 @@ This repository contains the source code, research, and documentation for the pr
 | J5    | Z    | ±90°      | 0.825          | Endpoint pitch |
 
 The arm's max reach is shown when the python math server is started.
+
+### Joint Lock
+
+Freeze individual joints while the arm follows the target via IK:
+
+1. Press **1–6** to select a joint
+2. Press **R** to exit manual-override mode (keeps joint selected)
+3. Press **L** to toggle lock — the solver skips that joint
+4. Drag the sphere — locked joint stays frozen, rest of arm reaches
+
+Press **L** again to unlock. Press **V** twice to clear all locks.
 
 ## IK Algorithms
 

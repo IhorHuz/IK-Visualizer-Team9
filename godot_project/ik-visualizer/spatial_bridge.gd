@@ -53,6 +53,9 @@ var selected_joint: int = 0
 var joint_info_label: Label
 var manual_override: bool = false
 
+# Joint lock
+var locked_joints: Array[bool] = [false, false, false, false, false, false]
+
 # Motion trail
 var trail_enabled: bool = false
 var trail_points: Array[Vector3] = []
@@ -90,8 +93,8 @@ func _ready():
 	trail_mesh_instance.material_override = trail_mat
 	add_child(trail_mesh_instance)
 
-	algo_dropdown.add_item("FABRIK")
 	algo_dropdown.add_item("CCD")
+	algo_dropdown.add_item("FABRIK")
 	algo_dropdown.add_item("JACOBIAN")
 
 	mode_label = Label.new()
@@ -152,7 +155,8 @@ func _process(delta):
 	var data_to_send = {
 		"target_pos": [target_3d.x, target_3d.y, target_3d.z],
 		"algo": selected_algo,
-		"mode": mode_str
+		"mode": mode_str,
+		"locked_joints": locked_joints
 	}
 	udp_peer.put_packet(JSON.stringify(data_to_send).to_utf8_buffer())
 
@@ -441,6 +445,9 @@ func _input(event):
 				if not trail_enabled:
 					trail_points.clear()
 					trail_mesh.clear_surfaces()
+			KEY_L:
+				locked_joints[selected_joint] = not locked_joints[selected_joint]
+				update_joint_info_label()
 
 func toggle_renderer():
 	renderer_mode = RendererMode.STICK if renderer_mode == RendererMode.ROBOT else RendererMode.ROBOT
@@ -454,6 +461,7 @@ func toggle_renderer():
 	manual_override = false
 	for i in range(ACTIVE_JOINTS):
 		manual_angles[i] = 0.0
+		locked_joints[i] = false
 	selected_joint = 0
 
 	var selected_algo = algo_dropdown.get_item_text(algo_dropdown.selected)
@@ -487,7 +495,8 @@ func update_joint_info_label():
 	var mode_str = "MANUAL" if manual_override else "IK"
 	var names = ["J0(Y)", "J1(Z)", "J2(Z)", "J3(Y)", "J4(Z)", "J5(Z)"]
 	var sel = selected_joint
-	joint_info_label.text = "Mode: %s | Selected: %s [%d] = %.2f rad" % [mode_str, names[sel], sel, manual_angles[sel]]
+	var lock_str = " LOCKED" if locked_joints[sel] else ""
+	joint_info_label.text = "Mode: %s | Selected: %s [%d] = %.2f rad%s" % [mode_str, names[sel], sel, manual_angles[sel], lock_str]
 
 func apply_manual_adjust(delta: float):
 	manual_override = true

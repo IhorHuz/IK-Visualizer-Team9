@@ -42,7 +42,7 @@ def forward_kinematics(angles, lengths, origin):
 
 
 class CcdSolver3d:
-    def __init__(self, joints, target, initial_angles=None):
+    def __init__(self, joints, target, initial_angles=None, locked_joints=None):
         self.origin = np.array([joints[0].x, joints[0].y, joints[0].z], dtype=float)
         self.target = np.array([target.x, target.y, target.z], dtype=float)
         self.lengths = [
@@ -58,6 +58,7 @@ class CcdSolver3d:
             self.angles = list(initial_angles)
         else:
             self.angles = [0.0] * (self.n - 1)
+        self.locked_joints = locked_joints if locked_joints else [False] * (self.n - 1)
 
     def solve(self):
         if self.target[1] < 0:
@@ -68,6 +69,9 @@ class CcdSolver3d:
             return joints, self.angles
 
         for i in range(self.n - 2, -1, -1):
+            if self.locked_joints[i]:
+                continue
+
             joints, R_frames = forward_kinematics(self.angles, self.lengths, self.origin)
 
             e_world = joints[-1] - joints[i]

@@ -42,7 +42,7 @@ def forward_kinematics(angles, lengths, origin):
 
 
 class JacobianSolver3d:
-    def __init__(self, joints, target, initial_angles=None):
+    def __init__(self, joints, target, initial_angles=None, locked_joints=None):
         self.origin = np.array([joints[0].x, joints[0].y, joints[0].z], dtype=float)
         self.target = np.array([target.x, target.y, target.z], dtype=float)
         self.lengths = [
@@ -61,6 +61,7 @@ class JacobianSolver3d:
             self.angles = list(initial_angles)
         else:
             self.angles = [0.0] * (self.n - 1)
+        self.locked_joints = locked_joints if locked_joints else [False] * (self.n - 1)
 
     def solve(self):
         if self.target[1] < 0:
@@ -81,6 +82,11 @@ class JacobianSolver3d:
 
             r_vector = p_ee - joints[i]
             J[:, i] = np.cross(world_axis, r_vector)
+
+        # Zero out locked joints so they don't affect the solve
+        for i in range(num_axes):
+            if self.locked_joints[i]:
+                J[:, i] = 0.0
 
         J_JT = np.dot(J, J.T)
         damping_matrix = J_JT + (self.damping ** 2) * np.eye(3)
@@ -118,6 +124,8 @@ class JacobianSolver3d:
                     safe_scale = mid
 
         for i in range(num_axes):
+            if self.locked_joints[i]:
+                continue
             self.angles[i] += safe_scale * actual_deltas[i]
 
             if ANGLE_LIMITS[i] is None:
