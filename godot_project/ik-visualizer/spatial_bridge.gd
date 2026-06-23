@@ -64,6 +64,13 @@ var trail_mesh_instance := MeshInstance3D.new()
 var trail_mesh := ImmediateMesh.new()
 var last_algo: String = "FABRIK"
 
+# Demo mode
+var demo_mode: bool = false
+var demo_time: float = 0.0
+const DEMO_RADIUS := 4.0
+const DEMO_CENTER_Y := 3.0
+const DEMO_PERIOD := 10.0
+
 
 func _ready():
 	udp_peer.connect_to_host(server_ip, server_port)
@@ -141,7 +148,15 @@ func _process(delta):
 	target_height = clamp(target_height, 0.0, camera.global_position.y - 2.0)
 
 	var target_3d = target_handle.global_position
-	if is_dragging:
+	if demo_mode:
+		demo_time += delta
+		var angle = (demo_time / DEMO_PERIOD) * TAU
+		var x = DEMO_RADIUS * sin(angle * 3.0 + 1.0)
+		var z = DEMO_RADIUS * sin(angle * 2.0)
+		var y = DEMO_CENTER_Y + 1.0 * sin(angle)
+		target_handle.global_position = Vector3(x, y, z)
+		target_3d = target_handle.global_position
+	elif is_dragging:
 		var mouse_3d = get_3d_mouse_pos()
 		if mouse_3d != Vector3.ZERO:
 			if mouse_3d.length() > MAX_REACH * 1.2:
@@ -448,6 +463,10 @@ func _input(event):
 			KEY_L:
 				locked_joints[selected_joint] = not locked_joints[selected_joint]
 				update_joint_info_label()
+			KEY_D:
+				demo_mode = not demo_mode
+				demo_time = 0.0
+				update_mode_label()
 
 func toggle_renderer():
 	renderer_mode = RendererMode.STICK if renderer_mode == RendererMode.ROBOT else RendererMode.ROBOT
@@ -458,6 +477,7 @@ func toggle_renderer():
 
 	target_handle.global_position = Vector3(5, 0, 5)
 	is_dragging = false
+	demo_mode = false
 	manual_override = false
 	for i in range(ACTIVE_JOINTS):
 		manual_angles[i] = 0.0
@@ -489,7 +509,8 @@ func update_mode_label():
 		RendererMode.ROBOT: "ROBOT ARM [V]"
 	}
 	var trail_suffix = " | TRAIL [T]" if trail_enabled else ""
-	mode_label.text = "Mode: " + names[renderer_mode] + trail_suffix
+	var demo_suffix = " | DEMO [D]" if demo_mode else ""
+	mode_label.text = "Mode: " + names[renderer_mode] + trail_suffix + demo_suffix
 
 func update_joint_info_label():
 	var mode_str = "MANUAL" if manual_override else "IK"
